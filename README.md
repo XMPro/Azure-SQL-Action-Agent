@@ -8,7 +8,7 @@
 The *Azure SQL Action Agent* allows a specified database and table to be updated with stream data at any point in the use case flow. In other words, this agent receives data and writes it to a database table. This agent is a virtual agent; thus, not relying on a specific environment to function and does not require you to have SQL Server installed.
 
 ## How the code works
-All settings referred to in the code need to correspond with the settings defined in the template that has been created for the agent using the Stream Integration Manager. Refer to the [Stream Integration Manager](https://docs.xmpro.com/topic/getting-to-know-the-framework/#1534129009509-379bd7d3-9f40) guide for instructions on how to define the settings in the template and package the agent after building the code. 
+All settings referred to in the code need to correspond with the settings defined in the template that has been created for the agent using the Stream Integration Manager. Refer to the [Stream Integration Manager](https://docs.xmpro.com/courses/packaging-an-agent-using-stream-integration-manager/) guide for instructions on how to define the settings in the template and package the agent after building the code. 
 
 After packaging the agent, you can upload it to XMPro IoT and start using it.
 
