@@ -12,15 +12,17 @@ using XMIoT.Framework.Settings.Enums;
 
 namespace XMPro.SQLAgents
 {
-    public class ActionAgent : IAgent, IReceivingAgent
+    public class ActionAgent : IAgent, IReceivingAgent, IPublishesError, IUsesVariable
     {
         private Configuration config;
         private DataTable dt;
         private List<XMIoT.Framework.Attribute> parentOutputs;
+        private List<SqlParameter> storedProcParams;
 
-        private string SQLServer => this.config["SQLServer"];
-        private string SQLUser => this.config["SQLUser"];
-        private string SQLPassword => this.decrypt(this.config["SQLPassword"]);
+        private bool UseConnectionVariables => bool.TryParse(this.config["UseConnectionVariables"], out bool result) && result;
+        private string SQLServer => UseConnectionVariables ? GetVariableValue(this.config["vSQLServer"]) : this.config["SQLServer"];
+        private string SQLUser => UseConnectionVariables ? GetVariableValue(this.config["vSQLUser"]) : this.config["SQLUser"];
+        private string SQLPassword => UseConnectionVariables ? GetVariableValue(this.config["vSQLPassword"], true) : this.decrypt(this.config["SQLPassword"]);
 
         private bool AllowTriggers
         {
@@ -62,15 +64,11 @@ namespace XMPro.SQLAgents
                                                 CONSTRAINT [PK_{0}] PRIMARY KEY CLUSTERED ([{0}_ID] ASC)
                                             )";
 
-        private bool CreateTable
-        {
-            get
-            {
-                var createTable = false;
-                bool.TryParse(this.config["CreateTable"], out createTable);
-                return createTable;
-            }
-        }
+        private bool CreateTable => bool.TryParse(this.config["CreateTable"], out bool createTable) && createTable;
+
+        private bool UsingStoredProc => bool.TryParse(this.config["UsingStoredProc"], out bool usingStoredProd) && usingStoredProd;
+
+        private string StoredProc => this.config["StoredProc"];
 
         private List<XMIoT.Framework.Attribute> ParentOutputs
         {
@@ -100,40 +98,87 @@ namespace XMPro.SQLAgents
         public event EventHandler<OnRequestParentOutputAttributesArgs> OnRequestParentOutputAttributes;
 
         public event EventHandler<OnDecryptRequestArgs> OnDecryptRequest;
+        public event EventHandler<OnErrorArgs> OnPublishError;
+        public event EventHandler<OnVariableRequestArgs> OnVariableRequest;
+
+        public string GetVariableValue(string variableName, bool isEncrypted = false)
+        {
+            var x = new OnVariableRequestArgs(variableName);
+            this.OnVariableRequest?.Invoke(this, x);
+            return isEncrypted ? this.decrypt(x.Value) : x.Value;
+        }
 
         public string GetConfigurationTemplate(string template, IDictionary<string, string> parameters)
         {
             var settings = Settings.Parse(template);
             new Populator(parameters).Populate(settings);
+            CheckBox UseConnectionVariables = (CheckBox)settings.Find("UseConnectionVariables");
             TextBox SQLServer = settings.Find("SQLServer") as TextBox;
             SQLServer.HelpText = string.Empty;
             TextBox SQLUser = settings.Find("SQLUser") as TextBox;
+            SQLServer.Visible = SQLUser.Visible = (UseConnectionVariables.Value == false);
             CheckBox SQLUseSQLAuth = settings.Find("SQLUseSQLAuth") as CheckBox;
             TextBox SQLPassword = settings.Find("SQLPassword") as TextBox;
-            SQLPassword.Visible = SQLUseSQLAuth.Value;
+            SQLPassword.Visible = !UseConnectionVariables.Value && SQLUseSQLAuth.Value;
+            VariableBox vSQLServer = settings.Find("vSQLServer") as VariableBox;
+            vSQLServer.HelpText = string.Empty;
+            VariableBox vSQLUser = settings.Find("vSQLUser") as VariableBox;
+            vSQLServer.Visible = vSQLUser.Visible = (UseConnectionVariables.Value == true);
+            VariableBox vSQLPassword = settings.Find("vSQLPassword") as VariableBox;
+            vSQLPassword.Visible = UseConnectionVariables.Value && SQLUseSQLAuth.Value;
             string errorMessage = "";
 
-            IList<string> databases = SQLHelpers.GetDatabases(SQLServer, SQLUser, SQLUseSQLAuth, this.decrypt(SQLPassword.Value), out errorMessage);
+            TextBox sqlServer = SQLServer;
+            TextBox sqlUser = SQLUser;
+            TextBox sqlPassword = SQLPassword;
+
+            if (UseConnectionVariables.Value)
+            {
+                sqlServer = new TextBox() { Value = GetVariableValue(vSQLServer.Value) };
+                sqlUser = new TextBox() { Value = GetVariableValue(vSQLUser.Value) };
+                if (SQLUseSQLAuth.Value)
+                    sqlPassword = new TextBox() { Value = GetVariableValue(vSQLPassword.Value) };
+            }
+
+            IList<string> databases = SQLHelpers.GetDatabases(sqlServer, sqlUser, SQLUseSQLAuth, this.decrypt(sqlPassword.Value), out errorMessage);
             DropDown SQLDatabase = settings.Find("SQLDatabase") as DropDown;
             SQLDatabase.Options = databases.Select(i => new Option() { DisplayMemeber = i, ValueMemeber = i }).ToList();
-            
+
+            CheckBox UsingStoredProc = settings.Find("UsingStoredProc") as CheckBox;
+            DropDown StoredProc = settings.Find("StoredProc") as DropDown;
             CheckBox CreateTable = settings.Find("CreateTable") as CheckBox;
             TextBox SQLTableNew = settings.Find("SQLTableNew") as TextBox;
-            SQLTableNew.Visible = (CreateTable.Value == true);
-
             DropDown SQLTable = settings.Find("SQLTable") as DropDown;
-            SQLTable.Visible = (CreateTable.Value == false);
+            CheckBox AllowTriggers = settings.Find("AllowTriggers") as CheckBox;
+
+            if (UsingStoredProc.Value == true)
+            {
+                StoredProc.Visible = true;
+                CreateTable.Visible = SQLTableNew.Visible = SQLTable.Visible = AllowTriggers.Visible = false;
+            }
+            else
+            {
+                StoredProc.Visible = false;
+                CreateTable.Visible = AllowTriggers.Visible = true;
+                SQLTableNew.Visible = (CreateTable.Value == true);
+                SQLTable.Visible = (CreateTable.Value == false);
+            }
 
             if (!String.IsNullOrWhiteSpace(SQLDatabase.Value))
             {
-                IList<string> tables = SQLHelpers.GetTables(SQLServer, SQLUser, SQLUseSQLAuth, this.decrypt(SQLPassword.Value), SQLDatabase, out errorMessage);                
+                IList<string> tables = SQLHelpers.GetTables(sqlServer, sqlUser, SQLUseSQLAuth, this.decrypt(sqlPassword.Value), SQLDatabase, out errorMessage);                
                 SQLTable.Options = tables.Select(i => new Option() { DisplayMemeber = i, ValueMemeber = i }).ToList();
                 if (tables.Contains(SQLTable.Value) == false)
                     SQLTable.Value = "";
+
+                var storedprocs = SQLHelpers.GetStoredProcs(sqlServer, sqlUser, SQLUseSQLAuth, this.decrypt(sqlPassword.Value), SQLDatabase, out errorMessage);
+                StoredProc.Options = storedprocs.Select(i => new Option() { DisplayMemeber = i, ValueMemeber = i }).ToList();
+                if (storedprocs.Contains(StoredProc.Value) == false)
+                    StoredProc.Value = "";
             }
 
             if (!String.IsNullOrWhiteSpace(errorMessage))
-                SQLServer.HelpText = errorMessage;
+                SQLServer.HelpText = vSQLServer.HelpText = errorMessage;
 
             return settings.ToString();
         }
@@ -141,7 +186,10 @@ namespace XMPro.SQLAgents
         public IEnumerable<XMIoT.Framework.Attribute> GetInputAttributes(string endpoint, IDictionary<string, string> parameters)
         {
             this.config = new Configuration() { Parameters = parameters };
-            if (CreateTable == false)
+            if (UsingStoredProc)
+                return SQLHelpers.GetStoredProcInParams(this.SQLServer, this.SQLUser, this.SQLUseSQLAuth, this.SQLPassword, this.SQLDatabase, this.StoredProc)
+                        .Select(p => new XMIoT.Framework.Attribute(p.ParameterName.TrimStart(new char[] { '@' }), SQLHelpers.GetSystemType(p.DbType).GetIoTType()));
+            else if (CreateTable == false)
                 return SQLHelpers.GetColumns(this.SQLServer, this.SQLUser, this.SQLUseSQLAuth, this.SQLPassword, this.SQLDatabase, this.SQLTable)
                     .Where(c => !c.AutoIncrement && !c.ReadOnly)
                     .Select(col => new XMIoT.Framework.Attribute(col.ColumnName, col.DataType.GetIoTType()));
@@ -152,7 +200,10 @@ namespace XMPro.SQLAgents
         public IEnumerable<XMIoT.Framework.Attribute> GetOutputAttributes(string endpoint, IDictionary<string, string> parameters)
         {
             this.config = new Configuration() { Parameters = parameters };
-            if (CreateTable == false)
+            if (UsingStoredProc)
+                return SQLHelpers.GetStoredProcParams(this.SQLServer, this.SQLUser, this.SQLUseSQLAuth, this.SQLPassword, this.SQLDatabase, this.StoredProc)
+                        .Select(p => new XMIoT.Framework.Attribute(p.ParameterName.TrimStart(new char[] { '@' }), SQLHelpers.GetSystemType(p.DbType).GetIoTType()));
+            else if (CreateTable == false)
                 return SQLHelpers.GetColumns(this.SQLServer, this.SQLUser, this.SQLUseSQLAuth, this.SQLPassword, this.SQLDatabase, this.SQLTable)
                     .Select(col => new XMIoT.Framework.Attribute(col.ColumnName, col.DataType.GetIoTType()));
             else
@@ -165,21 +216,26 @@ namespace XMPro.SQLAgents
         {
             this.config = configuration;
 
-            if (CreateTable == true)
+            if (UsingStoredProc == true)
+                storedProcParams = SQLHelpers.GetStoredProcParams(this.SQLServer, this.SQLUser, this.SQLUseSQLAuth, this.SQLPassword, this.SQLDatabase, this.StoredProc).ToList();
+            else
             {
-                var newColumns = GetColumns(ParentOutputs);
-                using (SqlConnection connection = new SqlConnection(SQLHelpers.GetConnectionString(SQLServer, SQLUser, SQLPassword, SQLUseSQLAuth, SQLDatabase)))
+                if (CreateTable == true)
                 {
-                    SqlCommand command = new SqlCommand(String.Format(CreateTableSQL, RemoveSchemaName(SQLTable), SQLTable, newColumns), connection);
-                    command.CommandType = CommandType.Text;
-                    command.Connection.Open();
-                    command.ExecuteNonQuery();
+                    var newColumns = GetColumns(ParentOutputs);
+                    using (SqlConnection connection = new SqlConnection(SQLHelpers.GetConnectionString(SQLServer, SQLUser, SQLPassword, SQLUseSQLAuth, SQLDatabase)))
+                    {
+                        SqlCommand command = new SqlCommand(String.Format(CreateTableSQL, RemoveSchemaName(SQLTable), SQLTable, newColumns), connection);
+                        command.CommandType = CommandType.Text;
+                        command.Connection.Open();
+                        command.ExecuteNonQuery();
+                    }
                 }
-            }
 
-            var adp = new SqlDataAdapter(String.Format("Select Top 0 * FROM {0}", SQLHelpers.AddTableQuotes(SQLTable)), SQLHelpers.GetConnectionString(SQLServer, SQLUser, SQLPassword, SQLUseSQLAuth, SQLDatabase));
-            this.dt = new DataTable();
-            adp.Fill(this.dt);
+                var adp = new SqlDataAdapter(String.Format("Select Top 0 * FROM {0}", SQLHelpers.AddTableQuotes(SQLTable)), SQLHelpers.GetConnectionString(SQLServer, SQLUser, SQLPassword, SQLUseSQLAuth, SQLDatabase));
+                this.dt = new DataTable();
+                adp.Fill(this.dt);
+            }
         }
 
         public void Start()
@@ -188,32 +244,73 @@ namespace XMPro.SQLAgents
 
         public void Receive(String endpointName, JArray events)
         {
-            if (dt != null)
+            try
             {
-                this.dt.Clear();
-                foreach (JObject _event in events)
+                if (UsingStoredProc)
                 {
-                    var newRow = this.dt.NewRow();
-                    foreach (var attribute in _event.Properties())
+                    using (SqlConnection connection = new SqlConnection(SQLHelpers.GetConnectionString(SQLServer, SQLUser, SQLPassword, SQLUseSQLAuth, SQLDatabase)))
                     {
-                        if (newRow.Table.Columns.Contains(attribute.Name))
+                        connection.Open();
+                        SqlCommand cmd = new SqlCommand(StoredProc) { CommandType = CommandType.StoredProcedure };
+                        cmd.CommandTimeout = 60;
+                        cmd.Connection = connection;
+
+                        foreach (JObject _event in events)
                         {
-                            if (attribute.Value != null)
-                                newRow[attribute.Name] = ((JValue)attribute.Value).Value;
+                            cmd.Parameters.Clear();
+
+                            foreach (var param in storedProcParams)
+                            {
+                                var paramName = param.ParameterName.TrimStart(new char[] { '@' });
+                                var paramValue = ((JValue)_event[paramName])?.Value ?? DBNull.Value;
+                                var sqlParam = new SqlParameter(param.ParameterName, paramValue);
+                                sqlParam.Direction = param.Direction;
+                                cmd.Parameters.Add(sqlParam);
+                            }
+                            cmd.ExecuteNonQuery();
+
+                            foreach (var outParam in storedProcParams.Where(p => p.Direction != ParameterDirection.Input))
+                            {
+                                var paramName = outParam.ParameterName.TrimStart(new char[] { '@' });
+                                var paramValue = JToken.FromObject(cmd.Parameters[outParam.ParameterName].Value);
+                                if (_event.Properties().Any(p => p.Name == paramName))
+                                    _event[paramName] = paramValue;
+                                else
+                                    _event.Add(paramName, paramValue);
+                            }
                         }
                     }
-                    this.dt.Rows.Add(newRow);
                 }
-
-                using (SqlBulkCopy bulkCopy = new SqlBulkCopy(SQLHelpers.GetConnectionString(SQLServer, SQLUser, SQLPassword, SQLUseSQLAuth, SQLDatabase), AllowTriggers ? SqlBulkCopyOptions.FireTriggers : SqlBulkCopyOptions.Default))
+                else if (dt != null)
                 {
-                    bulkCopy.DestinationTableName = this.SQLTable;
-                    bulkCopy.WriteToServer(this.dt);
-                }
-            }
+                    this.dt.Clear();
+                    foreach (JObject _event in events)
+                    {
+                        var newRow = this.dt.NewRow();
+                        foreach (var attribute in _event.Properties())
+                        {
+                            if (newRow.Table.Columns.Contains(attribute.Name))
+                            {
+                                if (attribute.Value != null)
+                                    newRow[attribute.Name] = ((JValue)attribute.Value).Value;
+                            }
+                        }
+                        this.dt.Rows.Add(newRow);
+                    }
 
-#warning publish new rows below
-            this.OnPublish?.Invoke(this, new OnPublishArgs(events));//publish the new rows
+                    using (SqlBulkCopy bulkCopy = new SqlBulkCopy(SQLHelpers.GetConnectionString(SQLServer, SQLUser, SQLPassword, SQLUseSQLAuth, SQLDatabase), AllowTriggers ? SqlBulkCopyOptions.FireTriggers : SqlBulkCopyOptions.Default))
+                    {
+                        bulkCopy.DestinationTableName = this.SQLTable;
+                        bulkCopy.WriteToServer(this.dt);
+                    }
+                }
+
+                this.OnPublish?.Invoke(this, new OnPublishArgs(events, "Output"));//publish the new rows
+            }
+            catch (Exception ex)
+            {
+                this.OnPublishError?.Invoke(this, new OnErrorArgs(this.UniqueId, DateTime.UtcNow, "XMPro.SQLAgents.ActionAgent.Receive", ex.Message, ex.InnerException?.ToString() ?? "", events));
+            }
         }
 
         public void Destroy()
@@ -238,25 +335,18 @@ namespace XMPro.SQLAgents
             if (String.IsNullOrWhiteSpace(this.SQLDatabase))
                 errors.Add($"Error {i++}: Database is not specified.");
 
-            if (String.IsNullOrWhiteSpace(this.SQLTable))
+            if (this.UsingStoredProc && String.IsNullOrWhiteSpace(this.StoredProc))
+                errors.Add($"Error {i++}: Stored Procedure is not specified.");
+
+            if (!this.UsingStoredProc && String.IsNullOrWhiteSpace(this.SQLTable))
                 errors.Add($"Error {i++}: Table is not specified.");
 
             if (errors.Any() == false)
             {
                 var errorMessage = "";
                 var server = new TextBox() { Value = this.SQLServer };
-                //IList<string> databases = SQLHelpers.GetDatabases(server, new TextBox() { Value = this.SQLUser }, new CheckBox() { Value = this.SQLUseSQLAuth }, this.SQLPassword, out errorMessage);
-
-                //if (string.IsNullOrWhiteSpace(errorMessage) == false)
-                //{
-                //    errors.Add($"Error {i++}: {errorMessage}");
-                //    return errors.ToArray();
-                //}
-
-                //if (databases.Any(d => d == this.SQLDatabase) == false)
-                //    errors.Add($"Error {i++}: Databse '{this.SQLDatabase}' cannot be found at the server.");
-
-                if (this.CreateTable == false)
+                
+                if (!this.UsingStoredProc && this.CreateTable == false)
                 {
                     IList<string> tables = SQLHelpers.GetTables(server, new TextBox() { Value = this.SQLUser }, new CheckBox() { Value = this.SQLUseSQLAuth }, this.SQLPassword, new DropDown() { Value = this.SQLDatabase }, out errorMessage);
 
