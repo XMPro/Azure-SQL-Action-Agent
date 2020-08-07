@@ -107,6 +107,72 @@ namespace XMPro.SQLAgents
             return new List<string>();
         }
 
+        internal static IList<string> GetUserDefinedTableTypes(TextBox SQLServer, TextBox SQLUser, CheckBox SQLUseSQLAuth, string SQLPassword, DropDown SQLDatabase, out string errorMessage)
+        {
+            errorMessage = "";
+            try
+            {
+                if (StringExtentions.IsNullOrWhiteSpace(SQLServer.Value, SQLUser.Value, SQLDatabase.Value) == false
+                    && (SQLUseSQLAuth.Value == false || String.IsNullOrWhiteSpace(SQLPassword) == false))
+                {
+                    using (SqlConnection connection = new SqlConnection(GetConnectionString(SQLServer.Value, SQLUser.Value, SQLPassword, SQLUseSQLAuth.Value, SQLDatabase.Value)))
+                    {
+                        connection.Open();
+                        using (SqlCommand command = new SqlCommand("select name from sys.types where is_user_defined = 1 and is_table_type = 1", connection))
+                        {
+                            using (SqlDataReader reader = command.ExecuteReader())
+                            {
+                                var tables = new List<string>();
+                                while (reader.Read())
+                                    tables.Add(reader.GetString(0));
+                                return tables;
+                            }
+                        }
+                    }
+                }
+                SQLServer.HelpText = String.Empty;
+            }
+            catch (Exception ex)
+            {
+                errorMessage = "Unable to fetch list of user defined Table Types";
+            }
+            return new List<string>();
+        }
+
+        internal static List<string> GetTableTypeCoumns(TextBox SQLServer, TextBox SQLUser, CheckBox SQLUseSQLAuth, string SQLPassword, DropDown SQLDatabase, string SQLTableTypeName , out string errorMessage)
+        {
+            errorMessage = "";
+            try
+            {
+                if (StringExtentions.IsNullOrWhiteSpace(SQLServer.Value, SQLUser.Value, SQLDatabase.Value) == false
+                    && (SQLUseSQLAuth.Value == false || String.IsNullOrWhiteSpace(SQLPassword) == false))
+                {
+                    using (SqlConnection connection = new SqlConnection(GetConnectionString(SQLServer.Value, SQLUser.Value, SQLPassword, SQLUseSQLAuth.Value, SQLDatabase.Value)))
+                    {
+                        connection.Open();
+                        using (SqlCommand command = new SqlCommand("select c.name as column_name from sys.table_types t inner join sys.columns c on c.object_id = t.type_table_object_id inner join sys.types y on y.user_type_id = c.user_type_id where t.is_user_defined = 1   and t.is_table_type = 1 and t.name = '" + SQLTableTypeName + "'" , connection))
+                        {
+                            using (SqlDataReader reader = command.ExecuteReader())
+                            {
+                                var tables = new List<string>();
+                                while (reader.Read())
+                                    tables.Add(reader.GetString(0));
+                                return tables;
+                            }
+                        }
+                    }
+                }
+                SQLServer.HelpText = String.Empty;
+            }
+            catch (Exception ex)
+            {
+                errorMessage = "Unable to fetch list of user defined Table Type Columns";
+            }
+            return new List<string>();
+        }
+
+
+
         internal static IList<DataColumn> GetColumns(string SQLServer, string SQLUser, bool SQLUseSQLAuth, string SQLPassword, string SQLDatabase, string SQLTable)
         {
             if (StringExtentions.IsNullOrWhiteSpace(SQLServer, SQLUser, SQLDatabase, SQLTable) == false
@@ -125,6 +191,94 @@ namespace XMPro.SQLAgents
             else
             {
                 return new List<DataColumn>();
+            }
+        }
+
+        internal static IList<string> GetStoredProcs(TextBox SQLServer, TextBox SQLUser, CheckBox SQLUseSQLAuth, string SQLPassword, DropDown SQLDatabase, out string errorMessage)
+        {
+            errorMessage = "";
+            try
+            {
+                if (StringExtentions.IsNullOrWhiteSpace(SQLServer.Value, SQLUser.Value, SQLDatabase.Value) == false
+                    && (SQLUseSQLAuth.Value == false || String.IsNullOrWhiteSpace(SQLPassword) == false))
+                {
+                    using (SqlConnection connection = new SqlConnection(GetConnectionString(SQLServer.Value, SQLUser.Value, SQLPassword, SQLUseSQLAuth.Value, SQLDatabase.Value)))
+                    {
+                        connection.Open();
+                        using (SqlCommand command = new SqlCommand("select s.name+'.'+p.name as oname from sys.procedures p inner join sys.schemas s on p.schema_id = s.schema_id order by s.name, p.name", connection))
+                        {
+                            using (SqlDataReader reader = command.ExecuteReader())
+                            {
+                                var procs = new List<string>();
+                                while (reader.Read())
+                                    procs.Add(reader.GetString(0));
+                                return procs;
+                            }
+                        }
+                    }
+                }
+                SQLServer.HelpText = String.Empty;
+            }
+            catch (Exception ex)
+            {
+                errorMessage = "Unable to fetch list of Stored Procedures";
+            }
+            return new List<string>();
+        }
+
+        internal static List<SqlParameter> GetStoredProcParams(string SQLServer, string SQLUser, bool SQLUseSQLAuth, string SQLPassword, string SQLDatabase, string storedProcName)
+        {
+            if (StringExtentions.IsNullOrWhiteSpace(SQLServer, SQLUser, SQLDatabase) == false
+                && (SQLUseSQLAuth == false || String.IsNullOrWhiteSpace(SQLPassword) == false))
+            {
+                using (SqlConnection connection = new SqlConnection(GetConnectionString(SQLServer, SQLUser, SQLPassword, SQLUseSQLAuth, SQLDatabase)))
+                {
+                    SqlCommand cmd = new SqlCommand(storedProcName, connection) { CommandType = CommandType.StoredProcedure };
+                    cmd.Connection.Open();
+                    SqlCommandBuilder.DeriveParameters(cmd);
+                    return cmd.Parameters.Cast<SqlParameter>().ToList();
+                }
+            }
+
+            return new List<SqlParameter>();
+        }
+
+        internal static List<SqlParameter> GetStoredProcInParams(string SQLServer, string SQLUser, bool SQLUseSQLAuth, string SQLPassword, string SQLDatabase, string storedProcName)
+        {
+            return GetStoredProcParams(SQLServer, SQLUser, SQLUseSQLAuth, SQLPassword, SQLDatabase, storedProcName)
+                .Where(p => p.Direction == ParameterDirection.Input || p.Direction == ParameterDirection.InputOutput).ToList();
+        }
+
+        internal static List<SqlParameter> GetStoredProcOutParams(string SQLServer, string SQLUser, bool SQLUseSQLAuth, string SQLPassword, string SQLDatabase, string storedProcName)
+        {
+            return GetStoredProcParams(SQLServer, SQLUser, SQLUseSQLAuth, SQLPassword, SQLDatabase, storedProcName)
+                .Where(p => p.Direction == ParameterDirection.Output || p.Direction == ParameterDirection.InputOutput).ToList();
+        }
+
+        internal static Type GetSystemType(DbType type)
+        {
+            switch (type)
+            {
+                case DbType.AnsiString:
+                case DbType.AnsiStringFixedLength:
+                case DbType.StringFixedLength:
+                case DbType.Xml:
+                    return typeof(string);
+                    break;
+                case DbType.VarNumeric:
+                    return typeof(long);
+                    break;
+                case DbType.Time:
+                case DbType.Date:
+                case DbType.DateTime2:
+                    return typeof(DateTime);
+                    break;
+                case DbType.Binary:
+                    return typeof(System.Byte[]);
+                    break;
+                default:
+                    return Type.GetType("System." + type.ToString());
+
             }
         }
     }
