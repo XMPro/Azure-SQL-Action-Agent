@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text;
 using Newtonsoft.Json.Linq;
@@ -12,7 +12,7 @@ using XMIoT.Framework.Settings.Enums;
 
 namespace XMPro.SQLAgents
 {
-    public class ActionAgent : IAgent, IReceivingAgent, IPublishesError, IUsesVariable
+    public class ActionAgent : IAgent, IMapAndReceiveAgent, IPublishesError, IUsesVariable
     {
         private Configuration config;
         private DataTable dt;
@@ -23,6 +23,7 @@ namespace XMPro.SQLAgents
         private string SQLServer => UseConnectionVariables ? GetVariableValue(this.config["vSQLServer"]) : this.config["SQLServer"];
         private string SQLUser => UseConnectionVariables ? GetVariableValue(this.config["vSQLUser"]) : this.config["SQLUser"];
         private string SQLPassword => UseConnectionVariables ? GetVariableValue(this.config["vSQLPassword"], true) : this.decrypt(this.config["SQLPassword"]);
+        private string ReturnType => String.IsNullOrEmpty(this.config["ReturnType"]) ? "Append" : this.config["ReturnType"];
 
         private bool AllowTriggers
         {
@@ -146,6 +147,7 @@ namespace XMPro.SQLAgents
 
             CheckBox UsingStoredProc = settings.Find("UsingStoredProc") as CheckBox;
             DropDown StoredProc = settings.Find("StoredProc") as DropDown;
+            DropDown ReturnType = settings.Find("ReturnType") as DropDown;
             CheckBox CreateTable = settings.Find("CreateTable") as CheckBox;
             TextBox SQLTableNew = settings.Find("SQLTableNew") as TextBox;
             DropDown SQLTable = settings.Find("SQLTable") as DropDown;
@@ -155,6 +157,10 @@ namespace XMPro.SQLAgents
             {
                 StoredProc.Visible = true;
                 CreateTable.Visible = SQLTableNew.Visible = SQLTable.Visible = AllowTriggers.Visible = false;
+                ReturnType.Visible = true;
+
+                if (parameters.ContainsKey("ReturnType") == false)
+                    ReturnType.Value = "Append";
             }
             else
             {
@@ -162,6 +168,7 @@ namespace XMPro.SQLAgents
                 CreateTable.Visible = AllowTriggers.Visible = true;
                 SQLTableNew.Visible = (CreateTable.Value == true);
                 SQLTable.Visible = (CreateTable.Value == false);
+                ReturnType.Visible = false;
             }
 
             if (!String.IsNullOrWhiteSpace(SQLDatabase.Value))
@@ -201,11 +208,16 @@ namespace XMPro.SQLAgents
         {
             this.config = new Configuration() { Parameters = parameters };
             if (UsingStoredProc)
-                return SQLHelpers.GetStoredProcParams(this.SQLServer, this.SQLUser, this.SQLUseSQLAuth, this.SQLPassword, this.SQLDatabase, this.StoredProc)
+            {
+                var outputs = SQLHelpers.GetStoredProcParams(this.SQLServer, this.SQLUser, this.SQLUseSQLAuth, this.SQLPassword, this.SQLDatabase, this.StoredProc)
+                        .Where(p => p.Direction != ParameterDirection.Input)
                         .Select(p => new XMIoT.Framework.Attribute(p.ParameterName.TrimStart(new char[] { '@' }), SQLHelpers.GetSystemType(p.DbType).GetIoTType()));
-            else if (CreateTable == false)
-                return SQLHelpers.GetColumns(this.SQLServer, this.SQLUser, this.SQLUseSQLAuth, this.SQLPassword, this.SQLDatabase, this.SQLTable)
-                    .Select(col => new XMIoT.Framework.Attribute(col.ColumnName, col.DataType.GetIoTType()));
+
+                if (ReturnType == "Append")
+                    outputs = outputs.Union(ParentOutputs);
+
+                return outputs;
+            }
             else
             {
                 return ParentOutputs;
@@ -242,7 +254,12 @@ namespace XMPro.SQLAgents
         {
         }
 
-        public void Receive(String endpointName, JArray events)
+        public void Receive(string endpointName, JArray events)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void Receive(String endpointName, JArray events, JArray mappedEvents)
         {
             try
             {
@@ -255,10 +272,12 @@ namespace XMPro.SQLAgents
                         cmd.CommandTimeout = 60;
                         cmd.Connection = connection;
 
-                        foreach (JObject _event in events)
+                        int listIdx = 0;
+                        var eventsList = events.Children<JObject>();
+                        var output = new JArray();
+                        foreach (JObject _event in mappedEvents)
                         {
-                            cmd.Parameters.Clear();
-
+                            cmd.Parameters.Clear();                            
                             foreach (var param in storedProcParams)
                             {
                                 var paramName = param.ParameterName.TrimStart(new char[] { '@' });
@@ -269,43 +288,47 @@ namespace XMPro.SQLAgents
                             }
                             cmd.ExecuteNonQuery();
 
+                            var oEvent = (ReturnType != "Append") ? new JObject() : eventsList.ElementAt(listIdx++);
                             foreach (var outParam in storedProcParams.Where(p => p.Direction != ParameterDirection.Input))
                             {
                                 var paramName = outParam.ParameterName.TrimStart(new char[] { '@' });
-                                var paramValue = JToken.FromObject(cmd.Parameters[outParam.ParameterName].Value);
-                                if (_event.Properties().Any(p => p.Name == paramName))
-                                    _event[paramName] = paramValue;
-                                else
-                                    _event.Add(paramName, paramValue);
+                                var paramValue = JToken.FromObject(cmd.Parameters[outParam.ParameterName].Value);                                
+                                oEvent[paramName] = paramValue;
                             }
+
+                            output.Add(oEvent);
                         }
+
+                        events = output;
                     }
                 }
                 else if (dt != null)
                 {
-                    this.dt.Clear();
-                    foreach (JObject _event in events)
+                    var data = this.dt.Clone();
+                    foreach (JObject _event in mappedEvents)
                     {
-                        var newRow = this.dt.NewRow();
+                        var newRow = data.NewRow();
                         foreach (var attribute in _event.Properties())
                         {
                             if (newRow.Table.Columns.Contains(attribute.Name))
                             {
-                                if (attribute.Value != null)
+                                if (attribute.Value != null && attribute.Value.Type != JTokenType.Null)
                                     newRow[attribute.Name] = ((JValue)attribute.Value).Value;
+                                else
+                                    newRow[attribute.Name] = DBNull.Value;
                             }
                         }
-                        this.dt.Rows.Add(newRow);
+                        data.Rows.Add(newRow);
                     }
 
-                    using (SqlBulkCopy bulkCopy = new SqlBulkCopy(SQLHelpers.GetConnectionString(SQLServer, SQLUser, SQLPassword, SQLUseSQLAuth, SQLDatabase), AllowTriggers ? SqlBulkCopyOptions.FireTriggers : SqlBulkCopyOptions.Default))
+                    using (SqlBulkCopy bulkCopy = new SqlBulkCopy(SQLHelpers.GetConnectionString(SQLServer, SQLUser, SQLPassword, SQLUseSQLAuth, SQLDatabase), AllowTriggers ? SqlBulkCopyOptions.FireTriggers : (SqlBulkCopyOptions.Default | SqlBulkCopyOptions.KeepNulls)))
                     {
                         bulkCopy.DestinationTableName = this.SQLTable;
-                        bulkCopy.WriteToServer(this.dt);
+                        bulkCopy.WriteToServer(data);
                     }
                 }
 
-                this.OnPublish?.Invoke(this, new OnPublishArgs(events, "Output"));//publish the new rows
+                this.OnPublish?.Invoke(this, new OnPublishArgs(events, "Output"));  //publish the original (unmapped) payload
             }
             catch (Exception ex)
             {
@@ -413,6 +436,6 @@ namespace XMPro.SQLAgents
             }
         }
 
-        #endregion Helper Methods
-    }
+		#endregion Helper Methods
+	}
 }
