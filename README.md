@@ -1,4 +1,4 @@
-# Azure-SQL-Action-Agent
+# Azure SQL Action Agent
 ## Prerequisites
 - Visual Studio
 - [XMPro IoT Framework NuGet package](https://www.nuget.org/packages/XMPro.IOT.Framework/)
