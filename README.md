@@ -1,19 +1,20 @@
 # Azure-SQL-Action-Agent
 ## Prerequisites
-- Visual Studio (any version that supports .Net Core 2.1)
-- [XMPro IoT Framework NuGet package](https://www.nuget.org/packages/XMPro.IOT.Framework/3.0.2-beta)
-- Please see the [Building an Agent for XMPro IoT](https://docs.xmpro.com/lessons/writing-an-agent-for-xmpro-iot/) guide for a better understanding of how the XMPro IoT Framework works.
+- Visual Studio
+- [XMPro IoT Framework NuGet package](https://www.nuget.org/packages/XMPro.IOT.Framework/)
+- Please see the [Manage Agents](https://documentation.xmpro.com/how-tos/manage-agents) guide for a better understanding of how the Agent Framework works
 
 ## Description
 The *Azure SQL Action Agent* allows a specified database and table to be updated with stream data at any point in the use case flow. In other words, this agent receives data and writes it to a database table. This agent is a virtual agent; thus, not relying on a specific environment to function and does not require you to have SQL Server installed.
 
 ## How the code works
-All settings referred to in the code need to correspond with the settings defined in the template that has been created for the agent using the Stream Integration Manager. Refer to the [Stream Integration Manager](https://docs.xmpro.com/courses/packaging-an-agent-using-stream-integration-manager/) guide for instructions on how to define the settings in the template and package the agent after building the code. 
+All settings referred to in the code need to correspond with the settings defined in the template that has been created for the agent using the XMPro Package Manager. Refer to the [XMPro Package Manager](https://documentation.xmpro.com/agent/packaging-agents/) guide for instructions on how to define the settings in the template and package the agent after building the code. 
 
-After packaging the agent, you can upload it to XMPro IoT and start using it.
+After packaging the agent, you can upload it to the XMPro Data Stream Designer and start using it.
 
 ### Settings
 When a user needs to use the *Azure SQL* action agent, they need to provide the name of the SQL Server instance in which the database resides to which they want to write the incoming data to, along with a username and password that can be used. Retrieve these values from the configuration using the following code: 
+
 ```csharp
 private string SQLServer => this.config["SQLServer"];
 private string SQLUser => this.config["SQLUser"];
@@ -21,6 +22,7 @@ private string SQLPassword => this.decrypt(this.config["SQLPassword"]);
 ```
 
 When configuring the agent, the user has the option of choosing to fire database triggers when a record is inserted. This setting need to be defined as follows:
+
 ```csharp
 private bool AllowTriggers
 {
@@ -32,7 +34,9 @@ private bool AllowTriggers
     }
 }
 ```
+
 To get the value of the check box that indicates if SQL Server Authentication should be used when connecting to the database or not, use the following code:
+
 ```csharp
 private bool SQLUseSQLAuth
 {
@@ -46,11 +50,13 @@ private bool SQLUseSQLAuth
 ```
 
 Get the database name:
+
 ```csharp
 private string SQLDatabase => this.config["SQLDatabase"];
 ```
 
-The user can either create a new table or connect to an existing one. You need to retrieve the name of either the new table or an existing table. If a user checks the *Create New Table* check box, he/ she will be prompted to provide the name of the new table.
+The user can either create a new table or connect to an existing one. You need to retrieve the name of either the new table or an existing table. If a user checks the *Create New Table* check box, they will be prompted to provide the name of the new table.
+
 ```csharp
 private string SQLTable
 {
@@ -73,14 +79,17 @@ private bool CreateTable
     }
 }
 ```
-### Configurations
+
+### Configuration
 In the *GetConfigurationTemplate* method, parse the JSON representation of the settings into the Settings object.
+
 ```csharp
 var settings = Settings.Parse(template);
 new Populator(parameters).Populate(settings);
 ```
 
 Create controls for the SQL Server instance name, username and password, and the *SQL Server Authentication* checkbox and set their values.
+
 ```csharp
 TextBox SQLServer = settings.Find("SQLServer") as TextBox;
 SQLServer.HelpText = string.Empty;
@@ -89,7 +98,9 @@ CheckBox SQLUseSQLAuth = settings.Find("SQLUseSQLAuth") as CheckBox;
 TextBox SQLPassword = settings.Find("SQLPassword") as TextBox;
 SQLPassword.Visible = SQLUseSQLAuth.Value;
 ```
+
 Get all the databases available on the specified server instance. Populate the *Database* drop down with the values.
+
 ```csharp
 string errorMessage = "";
 IList<string> databases = SQLHelpers.GetDatabases(SQLServer, SQLUser, SQLUseSQLAuth, this.decrypt(SQLPassword.Value), out errorMessage);
@@ -98,6 +109,7 @@ SQLDatabase.Options = databases.Select(i => new Option() { DisplayMemeber = i, V
 ```
 
 Create controls for the remaining settings and set their values.
+
 ```csharp
 CheckBox CreateTable = settings.Find("CreateTable") as CheckBox;
 TextBox SQLTableNew = settings.Find("SQLTableNew") as TextBox;
@@ -148,6 +160,7 @@ if (String.IsNullOrWhiteSpace(this.SQLTable))
 ```
 
 If all of the above values have been specified, verify that the table exists.
+
 ```csharp
 if (errors.Any() == false)
 {
@@ -168,12 +181,16 @@ if (errors.Any() == false)
     }
 }
 ```
+
 ### Create
 Set the config variable to the configuration received in the *Create* method.
+
 ```csharp
 this.config = configuration;
 ```
+
 If the user chooses to create a new table, the agent needs to get the column structure from its parent agent. Use the *CreateTableSQL* script to create the new table.
+
 ```csharp
 if (CreateTable == true)
 {
@@ -191,7 +208,9 @@ var adp = new SqlDataAdapter(String.Format("Select Top 0 * FROM {0}", SQLHelpers
 this.dt = new DataTable();
 adp.Fill(this.dt);
 ```
+
 *CreateTableSQL* script:
+
 ```csharp
 private const string CreateTableSQL = @"IF NOT EXISTS(SELECT * FROM sysobjects WHERE name = '{0}' AND xtype = 'U')
                                             CREATE TABLE {1}(
@@ -211,6 +230,7 @@ There is no need to do anything in the *Destroy* method.
 This agent requires you to implement the *IReceivingAgent* interface; thus, the *Receive* method needs to be added to the code. 
 
 Each of the incoming items needs to be written to the database table the user specified in the settings. Create a data table, and copy the incoming data to the SQL Server table by using the following code:
+
 ```csharp
 if (dt != null)
 {
@@ -239,12 +259,14 @@ if (dt != null)
 ```
 
 To publish events, invoke the *OnPublish* event.
+
 ```csharp
 this.OnPublish?.Invoke(this, new OnPublishArgs(events));
 ```
 
 ### Decrypting Values
 Since this agent needs secure settings (*SQL Password*), the values will automatically be encrypted. Use the following code to decrypt the values.
+
 ```csharp
 private string decrypt(string value)
 {
